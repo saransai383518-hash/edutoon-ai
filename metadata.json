@@ -1,0 +1,6 @@
+{
+  "name": "EduToon AI",
+  "description": "A colorful and playful children's educational mobile app with friendly cartoon-style navigation, interactive camera, image upload, and settings.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
