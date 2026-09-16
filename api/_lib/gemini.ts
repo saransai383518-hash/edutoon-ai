@@ -236,6 +236,19 @@ function languageInstructions(language: string): string {
     : 'Use simple, clear, child-friendly English for children ages 4-8.';
 }
 
+function parseGeminiJson(text: string): unknown {
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    throw new GeminiApiError('Gemini returned invalid analysis JSON.', 502, 'GEMINI_INVALID_RESPONSE');
+  }
+}
+
 export async function analyzeImage(image: string, language = 'en'): Promise<AnalysisResult> {
   const ai = getGenAI();
   const imagePart = await getImagePart(image);
@@ -248,7 +261,10 @@ ${languageInstructions(language)}`;
   console.info('GEMINI REQUEST STARTED', { model: GEMINI_MODEL });
   const response = await retryGemini(() => ai.models.generateContent({
     model: GEMINI_MODEL,
-    contents: { parts: [imagePart, { text: prompt }] },
+    contents: [{
+      role: 'user',
+      parts: [imagePart, { text: prompt }],
+    }],
     config: {
       systemInstruction: 'Always return precise, safe, child-friendly educational information about the actual image.',
       responseMimeType: 'application/json',
@@ -258,12 +274,7 @@ ${languageInstructions(language)}`;
   console.info('GEMINI HTTP STATUS', { model: GEMINI_MODEL, status: (response as any)?.status ?? 200 });
   const text = response.text?.trim();
   if (!text) throw new GeminiApiError('Gemini returned an empty analysis.', 502, 'GEMINI_INVALID_RESPONSE');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new GeminiApiError('Gemini returned invalid analysis JSON.', 502, 'GEMINI_INVALID_RESPONSE');
-  }
+  const parsed = parseGeminiJson(text);
   console.info('GEMINI RESPONSE PARSING RESULT', { parsed: typeof parsed === 'object' && parsed !== null ? 'object' : typeof parsed });
   if (!isAnalysisResult(parsed)) throw new GeminiApiError('Gemini returned an incomplete analysis.', 502, 'GEMINI_INVALID_RESPONSE');
   return parsed;
@@ -274,7 +285,10 @@ export async function askAboutImage(image: string, question: string, language = 
   const imagePart = await getImagePart(image);
   const response = await retryGemini(() => ai.models.generateContent({
     model: GEMINI_MODEL,
-    contents: { parts: [imagePart, { text: `You are a friendly fictional EduToon cartoon teacher. Answer this child's question only about the uploaded image. The detected subject is ${detectedSubject}. Earlier explanation: ${childFriendlyExplanation}. Use 2-4 short, safe sentences in ${language === 'ta' ? 'simple Tamil' : 'simple English'}. Question: ${question}` }] },
+    contents: [{
+      role: 'user',
+      parts: [imagePart, { text: `You are a friendly fictional EduToon cartoon teacher. Answer this child's question only about the uploaded image. The detected subject is ${detectedSubject}. Earlier explanation: ${childFriendlyExplanation}. Use 2-4 short, safe sentences in ${language === 'ta' ? 'simple Tamil' : 'simple English'}. Question: ${question}` }],
+    }],
     config: { systemInstruction: 'Give only a child-friendly educational answer grounded in the image.' },
   }));
   const answer = response.text?.trim();

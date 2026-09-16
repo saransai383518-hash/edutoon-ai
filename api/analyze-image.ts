@@ -18,7 +18,7 @@ export default async function handler(request: JsonRequest, response: JsonRespon
 			return;
 		}
 		const result = await analyzeImage(image, language);
-		sendJson(response, 200, { success: true, result, ...result });
+		sendJson(response, 200, { success: true, result });
 	} catch (error) {
 		sendError(response, error);
 	}

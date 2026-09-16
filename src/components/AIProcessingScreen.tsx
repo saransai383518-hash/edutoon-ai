@@ -74,11 +74,9 @@ export const AIProcessingScreen: React.FC<AIProcessingScreenProps> = ({
         signal: controller.signal,
       });
 
-      const responseText = await response.text();
       let data: { success?: boolean; result?: AIAnalysisResult; error?: string; code?: string; developerMessage?: string; providerStatus?: number; category?: string; model?: string };
-
       try {
-        data = JSON.parse(responseText);
+        data = (await response.json()) as typeof data;
       } catch {
         throw new Error(
           response.status === 404

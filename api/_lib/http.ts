@@ -20,7 +20,12 @@ export async function readJsonBody(request: JsonRequest): Promise<Record<string,
 
 function parseBody(raw: string): Record<string, unknown> {
   if (!raw.trim()) return {};
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new GeminiApiError('The request body must contain valid JSON.', 400, 'INVALID_REQUEST');
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new GeminiApiError('Request body must be a JSON object.', 400, 'INVALID_REQUEST');
   return parsed as Record<string, unknown>;
 }

@@ -34,7 +34,7 @@ app.post('/api/analyze-image', async (req, res) => {
       return sendJson(res, 400, { success: false, error: 'Image data is required in request body.', code: 'INVALID_REQUEST' });
     }
     const result = await analyzeImage(image, typeof language === 'string' ? language : 'en');
-    return sendJson(res, 200, { success: true, result, ...result });
+    return sendJson(res, 200, { success: true, result });
   } catch (error) {
     const normalized = toApiError(error);
     console.error('API ERROR', { status: normalized.status, code: normalized.code, message: safeErrorMessage(normalized) });
