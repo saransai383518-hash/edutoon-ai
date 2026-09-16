@@ -75,12 +75,16 @@ export const AIProcessingScreen: React.FC<AIProcessingScreenProps> = ({
       });
 
       const responseText = await response.text();
-      let data: { success?: boolean; result?: AIAnalysisResult; error?: string; developerMessage?: string; providerStatus?: number; category?: string; model?: string };
+      let data: { success?: boolean; result?: AIAnalysisResult; error?: string; code?: string; developerMessage?: string; providerStatus?: number; category?: string; model?: string };
 
       try {
         data = JSON.parse(responseText);
       } catch {
-        throw new Error(isTamil ? 'சேவையிலிருந்து தவறான பதில் வந்தது.' : 'The analysis service returned an invalid response.');
+        throw new Error(
+          response.status === 404
+            ? isTamil ? 'படப் பகுப்பாய்வு சேவை கிடைக்கவில்லை.' : 'The image analysis service was not found.'
+            : isTamil ? 'பகுப்பாய்வு சேவையிலிருந்து பதிலைப் பெற முடியவில்லை.' : 'The image analysis service returned an unreadable response.',
+        );
       }
 
       if (!response.ok || !data.success || !data.result) {
@@ -92,7 +96,7 @@ export const AIProcessingScreen: React.FC<AIProcessingScreenProps> = ({
             message: data.developerMessage,
           });
         }
-        throw new Error(data.error || (isTamil ? 'படத்தைப் புரிந்துகொள்வதில் சிக்கல்' : 'Failed to understand image'));
+        throw new Error(data.error || `${isTamil ? 'பகுப்பாய்வு தோல்வியடைந்தது' : 'Image analysis failed'} (${response.status}${data.code ? `, ${data.code}` : ''})`);
       }
 
       setProgress(100);

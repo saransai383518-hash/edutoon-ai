@@ -10,7 +10,7 @@ dotenv.config({ path: path.join(serverDirectory, '.env') });
 
 const app = express();
 const PORT = 3000;
-const GEMINI_MODEL = 'gemini-3.6-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set([
   'image/jpeg',
@@ -47,15 +47,25 @@ function getGenAI(): GoogleGenAI {
 
 function getSafeErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]');
+  const configuredKey = process.env.GEMINI_API_KEY?.trim();
+  return message
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]')
+    .replace(configuredKey || '__no_configured_key__', '[redacted-api-key]');
 }
 
 function getGeminiErrorInfo(error: any) {
+  const rawStatus = error?.status ?? error?.code ?? error?.error?.code;
+  const parsedStatus = Number(rawStatus);
   return {
-    status: Number(error?.status || error?.code || 500),
+    status: Number.isFinite(parsedStatus) && parsedStatus >= 400 ? parsedStatus : 500,
     category: error?.error?.status || error?.statusText || error?.name || 'UNKNOWN',
     message: getSafeErrorMessage(error),
   };
+}
+
+function sendApiJson(res: express.Response, status: number, body: Record<string, unknown>) {
+  console.info('API RESPONSE', { route: res.req.path, status, success: body.success === true });
+  return res.status(status).json(body);
 }
 
 async function retryTransientGeminiRequest<T>(request: () => Promise<T>): Promise<T> {
@@ -162,14 +172,16 @@ app.get('/api/health', (_req, res) => {
 app.post('/api/analyze-image', async (req, res) => {
   const { image, language = 'en' } = req.body;
   const isTamil = language === 'ta';
+  console.info('API REQUEST RECEIVED', { route: req.path, method: req.method });
 
   try {
     if (typeof image !== 'string' || !image.trim()) {
-      return res.status(400).json({ success: false, error: 'Image data is required in request body.' });
+      return sendApiJson(res, 400, { success: false, error: 'Image data is required in request body.', code: 'INVALID_REQUEST' });
     }
 
     const ai = getGenAI();
     const imagePart = await getImagePart(image);
+    console.info('IMAGE RECEIVED', { mimeType: imagePart.inlineData.mimeType, bytes: Buffer.byteLength(imagePart.inlineData.data, 'base64') });
 
     const languagePrompt = isTamil
       ? `
@@ -239,6 +251,7 @@ Also return these teaching-experience fields. They must describe the actual uplo
 ${languagePrompt}
 `;
 
+    console.info('GEMINI REQUEST STARTED', { model: GEMINI_MODEL });
     const response = await retryTransientGeminiRequest(() => ai.models.generateContent({
       model: GEMINI_MODEL,
       contents: {
@@ -377,6 +390,7 @@ ${languagePrompt}
         },
       },
     }));
+    console.info('GEMINI HTTP STATUS', { model: GEMINI_MODEL, status: (response as any)?.response?.status ?? (response as any)?.status ?? 200 });
 
     const text = response.text?.trim();
     if (!text) {
@@ -388,10 +402,11 @@ ${languagePrompt}
     } catch {
       throw new Error('Gemini returned an invalid analysis response. Please try again.');
     }
+    console.info('GEMINI RESPONSE PARSING RESULT', { parsed: typeof parsed === 'object' && parsed !== null ? 'object' : typeof parsed });
     if (!isValidAnalysisResult(parsed)) {
       throw new Error('Gemini returned an incomplete analysis. Please try again.');
     }
-    return res.json({ success: true, result: parsed });
+    return sendApiJson(res, 200, { success: true, result: parsed });
   } catch (error: any) {
     const { status: providerStatus, category, message: errorMessage } = getGeminiErrorInfo(error);
     console.error('GEMINI IMAGE ANALYSIS ERROR:', {
@@ -399,12 +414,30 @@ ${languagePrompt}
       message: errorMessage,
       status: providerStatus,
       category,
-      details: error?.errorDetails,
     });
-    const status = providerStatus === 400 || providerStatus === 401 || providerStatus === 403 ? 502 : 500;
-    return res.status(status).json({
+    const isMissingKey = errorMessage.includes('GEMINI_API_KEY is missing');
+    const isImageError = /image|base64|supported|data URL|picture/i.test(errorMessage) && providerStatus === 500;
+    const isMalformedGeminiResponse = /Gemini returned an (empty|invalid|incomplete) analysis/i.test(errorMessage);
+    const status = isMissingKey ? 503 : isImageError ? 400 : isMalformedGeminiResponse ? 502 : providerStatus === 429 ? 429 : providerStatus === 503 ? 503 : [400, 401, 403].includes(providerStatus) ? providerStatus : 500;
+    const code = isMissingKey ? 'MISSING_GEMINI_API_KEY' : isImageError ? 'INVALID_IMAGE' : isMalformedGeminiResponse ? 'GEMINI_INVALID_RESPONSE' : providerStatus === 429 ? 'GEMINI_QUOTA_EXCEEDED' : providerStatus === 503 ? 'GEMINI_TEMPORARILY_UNAVAILABLE' : 'GEMINI_API_ERROR';
+    return sendApiJson(res, status, {
       success: false,
-      error: getChildFriendlyAnalysisError(error),
+      error: isMissingKey
+        ? 'The image analysis service is not configured.'
+        : providerStatus === 401
+        ? 'The image analysis service rejected its credentials.'
+        : providerStatus === 403
+        ? 'The image analysis service denied this request.'
+        : providerStatus === 429
+        ? 'The image analysis service is busy right now. Please try again in a moment.'
+        : providerStatus === 503
+        ? 'The image analysis service is temporarily unavailable. Please try again shortly.'
+        : isMalformedGeminiResponse
+        ? 'The image analysis service returned an incomplete result. Please try again.'
+        : isImageError
+        ? getSafeErrorMessage(error)
+        : getChildFriendlyAnalysisError(error),
+      code,
       ...(process.env.NODE_ENV !== 'production' ? { developerMessage: errorMessage, providerStatus, category, model: GEMINI_MODEL } : {}),
     });
   }
@@ -472,7 +505,13 @@ app.use((error: any, _req: express.Request, res: express.Response, next: express
   if (error instanceof SyntaxError && 'body' in error) {
     return res.status(400).json({ success: false, error: 'The image request could not be read. Please choose the picture again.' });
   }
-  return next(error);
+  if (res.headersSent) return next(error);
+  console.error('API UNEXPECTED ERROR', { message: getSafeErrorMessage(error) });
+  return sendApiJson(res, 500, {
+    success: false,
+    error: 'The image analysis service encountered an unexpected error. Please try again.',
+    code: 'INTERNAL_SERVER_ERROR',
+  });
 });
 
 // Vite middleware setup for full-stack dev and production serving
@@ -496,4 +535,10 @@ async function startServer() {
   });
 }
 
-startServer();
+export default app;
+
+// Vercel imports this module from /api entrypoints; local and self-hosted runs
+// still use the traditional server startup path.
+if (!process.env.VERCEL) {
+  startServer();
+}
